@@ -1,0 +1,423 @@
+---
+title: "finalProjectCervivalCancerML"
+author: "Gitali Naim and Avital Abergel"
+date: "8/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction:
+
+Cervical cancer is among the 5 most common types of cancer in women worldwide.
+About 11,000 new cases of invasive cervical cancer are diagnosed each year in the U.S. However, the number of new cervical cancer cases has been declining steadily over the past decades. 
+In the United States, cervical cancer mortality rates plunged by 74% from 1955 - 1992 thanks to increased screening and early detection with the Pap test.
+Using this new dataset, we’ll attempt to explore the phenomena and also identify the key predictors of cervical cancer.
+A more detailed explanation can be found at:https://www.kaggle.com/loveall/cervical-cancer-risk-classification
+
+## Data Preparation:
+
+We’ll start off by loading the libraries and reading the data, after that, we’ll take a glimpse of the dataset and it’s structure.
+
+```{r message=FALSE, warning=FALSE}
+# Load libraries:
+library(wesanderson)
+library(ggplot2)
+library(dplyr)
+library(DataExplorer)
+library(rsample)
+library(caret)
+library(Boruta)
+library(caTools)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(Rtsne)
+library(klaR)
+library(psych)
+library(MASS)
+library(devtools)
+library(adabag)
+```
+
+Note: A look at the data before and after manipulation can be seen in the supplemental
+
+```{r warning=FALSE}
+# Load the dataset
+cervicalCancerData <- read.csv("C:\\Users\\avita\\Downloads\\kag_risk_factors_cervical_cancer.csv")
+# Checking the data size
+dim(cervicalCancerData)
+# Create a copy of the database. We will apply all needed changes on this copy.
+newCervicalCancerData = cervicalCancerData
+# Rename some of the column names
+colnames(newCervicalCancerData)[6] <- "Smokes.years"
+colnames(newCervicalCancerData)[7] <- "Smokes.packs.year"
+colnames(newCervicalCancerData)[9] <- "Hormonal.Contraceptives.years"
+colnames(newCervicalCancerData)[11] <- "IUD.years"
+colnames(newCervicalCancerData)[13] <- "STDs.number"
+colnames(newCervicalCancerData)[26] <- "STDs.Number.of.diagnosis"
+colnames(newCervicalCancerData)[27] <- "STDs.Time.since.first.diagnosis"
+colnames(newCervicalCancerData)[28] <- "STDs.Time.since.last.diagnosis"
+
+```
+
+## DATA MANIPULATION
+
+We checked what columns need to be repaired. We identified columns that had incorrect values- a question mark appeared for women who chose not to answer certain questions. Then we converted the question marks to -1. This will allow us on the one hand to perform numerical operations, and on the other hand it will be obvious that this is a wrong observation. 
+
+```{r warning=FALSE}
+# Create all the function to identify all columns that need repair (If the sum values of cols is ? then we identify it). Then, fix missing values
+cols = vector()
+for (i in 1:ncol(newCervicalCancerData)){
+  if (sum(newCervicalCancerData[,i] == "?") > 0){
+    cols = c(cols,i)
+  }
+}
+for (j in 1:length(cols)) {
+  newCervicalCancerData[,cols[j]] = as.character(newCervicalCancerData[,cols[j]])
+  newCervicalCancerData[which(newCervicalCancerData[,cols[j]] == "?"),cols[j]] = "-1.0"
+  newCervicalCancerData[,cols[j]] = as.numeric(newCervicalCancerData[,cols[j]])
+}
+```
+
+The last four columns (“Hinselmann”,“Schiller”,“Citology”,“Biopsy”) represent the results of cervical cancer exams. Positive exams results doesn’t necessarily imply in a diagnostic, but as multiple exams return positive, the greater the likelyhood of cervical cancer.To represent that, we created a variable called Cervical Cancer that is composed of: CervicalCancer = Hinselmann + Schiller + Citology + Biopsy.
+In addition, we wanted this column to be binary. We therefore decided that for a woman who has more than one positive test, she will be classified as 1, and a woman who does not have positive tests or who has only one positive test will be classified as 0.
+
+```{r warning=FALSE}
+#Create target variables to represent the cervical cancer
+newCervicalCancerData$CervicalCancer = newCervicalCancerData$Hinselmann + newCervicalCancerData$Schiller + newCervicalCancerData$Citology + newCervicalCancerData$Biopsy
+newCervicalCancerData$CervicalCancer = factor(newCervicalCancerData$CervicalCancer, levels=c("0","1","2","3","4"))
+#Getting only the "Confirmed" variables that we just find out above
+newCervicalCancerData <-data.frame(newCervicalCancerData)
+```
+
+## EDA:
+
+We’ll perform Exploratory Data Analysis (“EDA”) on our dataset.
+
+```{r warning=FALSE}
+cervicalCancerDataTmp = cervicalCancerData
+cervicalCancerDataTmp$CervicalCancer = cervicalCancerData$Hinselmann + cervicalCancerData$Schiller + cervicalCancerData$Citology + cervicalCancerData$Biopsy
+cervicalCancerDataTmp$CervicalCancer = factor(cervicalCancerDataTmp$CervicalCancer, levels=c("0","1","2","3","4"))
+cervicalCancerDataTmp = subset(cervicalCancerDataTmp, select = -c(STDs..Time.since.last.diagnosis,STDs..Time.since.first.diagnosis))
+COL_DATA = ncol(cervicalCancerDataTmp)
+for (i in 1:COL_DATA) {
+  cervicalCancerDataTmp[which(cervicalCancerDataTmp[,i] == "?"), i] = NA
+}
+cervicalCancerDataTmp = na.omit(cervicalCancerDataTmp)
+
+cervicalCancerDataTmp$CervicalCancer = factor(cervicalCancerDataTmp$CervicalCancer, levels=c("0","1","2","3","4"))
+# Sorting by number of positive test
+cervicalCancerDataTmp <-cervicalCancerDataTmp[order(cervicalCancerDataTmp$CervicalCancer),]
+# Sorting by smoking
+cervicalCancerDataTmp <-cervicalCancerDataTmp[order(cervicalCancerDataTmp$IUD),]
+
+# Mean of positive test- DX hpv
+cervicalCancerDataDx.HPV <- cervicalCancerDataTmp %>%
+  filter(between(Dx.HPV, 1, 1))
+
+gDx.HPV <-ggplot(data = cervicalCancerDataDx.HPV) +
+  geom_bar(mapping = aes(x = CervicalCancer, fill = CervicalCancer))
+print((gDx.HPV + ggtitle("Distribution of cervical cancer tests among women with Dx.HPV")))
+
+```
+
+From the graphs shown above it can be seen that the risk of cervical cancer increases among women who have been diagnosed with HPV,In the supplemental we can see more graphs that indicates that the risk of cervical cancer increases among women with sexually transmitted diseases and women that smokes.
+
+
+```{r warning=FALSE, fig.align='center',echo=FALSE}
+# [13] Density: CervicalCancer across Age
+ggplot(newCervicalCancerData, aes(x = Hormonal.Contraceptives.years, fill=CervicalCancer))+
+  geom_density(alpha = 0.40, color=NA)+
+  scale_fill_manual(values=c("limegreen","gold","orangered","red2","purple"))+
+  labs(title = "Density of CervicalCancer across Years of Hormonal Contraceptives")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  facet_grid(as.factor(CervicalCancer) ~ .)
+```
+It can be seen that our data indicates that taking hormonal contraceptives increases the risk of developing cervical cancer.
+It can be seen in the graphs that the longer a woman takes pills for a longer period of time, the more likely she is to get sick - the wider the production the higher the number of positive tests.
+
+```{r warning=FALSE}
+newCervicalCancerData$CervicalCancer = factor(newCervicalCancerData$CervicalCancer, levels=c("0","1","2","3","4"))
+# Check the proportion each value in the target
+round(prop.table(table(newCervicalCancerData$CervicalCancer)),2)
+# Plot the distribution of ages
+gGeneral <- ggplot(data = newCervicalCancerData) +
+  geom_bar(mapping = aes(x = CervicalCancer, fill = CervicalCancer))
+print((gGeneral + ggtitle("Distribution of cervical cancer tests among women")))
+plot_density(dplyr::select(newCervicalCancerData, c(Age, Number.of.sexual.partners,First.sexual.intercourse, Num.of.pregnancies, Hormonal.Contraceptives, Smokes )),  geom_density_args = list("fill" = 22, "alpha" = 0.2), title="Continuous Variables Density Plot", ncol=3)
+```
+
+From the first graph we can see the distribution of the rate of positive tests for cervical cancer in women
+The second graph shows the distribution of HPV risk factors: Age, First sexual intercourse, Hormonal contraceptives, number of pregnancies, number of sexual partners and smoking.
+
+```{r warning=FALSE}
+newCervicalCancerData$CervicalCancer = as.numeric(newCervicalCancerData$CervicalCancer)
+# Specify data column
+new_table <- aggregate(x= newCervicalCancerData$CervicalCancer,
+
+         # Specify group indicator
+         by = list(newCervicalCancerData$Age),
+         FUN = mean)
+
+colnames(new_table)[1] <- "Age"
+colnames(new_table)[2] <- "mean.of.positive.tests"
+positiveTestG <- ggplot(data = new_table) +
+  geom_line(mapping = aes(x = Age, y = mean.of.positive.tests), color="red")
+print(positiveTestG + ggtitle("The connection between age and the probability of being diagnosed
+with cervical cancer"))
+
+```
+
+It can be seen that Cervical cancer is mainly in the 35-55 age range.
+
+In order to run the algorithms we performed further manipulations on our data.
+
+```{r warning=FALSE}
+#Assign the values to yes or no potential for cancers
+newCervicalCancerData$CervicalCancer = as.numeric(newCervicalCancerData$CervicalCancer)
+newCervicalCancerData$CervicalCancer[newCervicalCancerData$CervicalCancer <2] <- 0
+newCervicalCancerData$CervicalCancer[newCervicalCancerData$CervicalCancer >1] <- 1
+```
+
+## Algorithms:
+
+## Kmeans Algorithm
+
+K means is an algorithm of clusters made in the form of unsupervised. When we ran the algorithm we chose K to be equal to 2 because our target feature is binary.
+We'll be using the kmeans() function.
+
+```{r warning=FALSE}
+newCervicalCancerData$CervicalCancer = as.numeric(newCervicalCancerData$CervicalCancer)
+interests <- newCervicalCancerData[1:33]
+interests_z <- as.data.frame(lapply(interests, scale))
+set.seed(2345)
+cervicalCance_clusters <- kmeans(interests_z, 2)
+newCervicalCancerData$cluster <- cervicalCance_clusters$cluster
+aggregate(data = newCervicalCancerData, Dx.HPV ~ cluster, mean)
+aggregate(data = newCervicalCancerData, STDs.number ~ cluster, mean)
+aggregate(data = newCervicalCancerData, Smokes.years ~ cluster, mean)
+aggregate(data = newCervicalCancerData, Number.of.sexual.partners ~ cluster, mean)
+aggregate(data = newCervicalCancerData, CervicalCancer ~ cluster, mean)
+```
+
+So, from our clustering analysis we see that there is a connection between having STDS, HPV and smoking
+of women and the chance to have cervical cancer. It can be seen that in the first cluster there are women with HPV, STDs, smoking and a high number of sexual partners and accordingly in the first cluster there is a higher risk of cervical cancer.
+This could be very important information to researches.
+
+## KNN Algorithm
+
+The k-nearest neighbors algorithm (k-NN) is a non-parametric classification method. It is used for classification and regression. In both cases, the input consists of the k closest training examples in data set.
+
+```{r warning=FALSE , message=FALSE}
+newCervicalCancerData$CervicalCancer = factor(newCervicalCancerData$CervicalCancer, levels = c(0, 1))
+set.seed(300)
+# Create index to split based on labels
+indxTrain <- createDataPartition(newCervicalCancerData$CervicalCancer, p=0.75, list=FALSE)
+# Subset training set with index
+training1 <- newCervicalCancerData[indxTrain,]
+# Subset training set with index
+testing1 <- newCervicalCancerData[-indxTrain,]
+
+trainX <- training1[,names(training1) != "CervicalCancer"]
+preProcValues <- preProcess(x = trainX,method = c("center", "scale"))
+preProcValues
+
+set.seed(400)
+ctrl <- trainControl(method="repeatedcv",repeats = 3)
+knnFit <- train(CervicalCancer ~ ., data = training1, method = "knn", trControl = ctrl, preProcess = c("center","scale"), tuneLength = 20)
+
+#Output of kNN fit
+knnFit
+plot(knnFit)
+# Predict the labels of the test set
+knnPredictions<-predict.train(object=knnFit,testing1, type="raw")
+
+# Evaluate the predictions
+table(knnPredictions)
+confusionMatrix(knnPredictions,testing1$CervicalCancer)
+```
+As it can see above, We looked for a different K each time and saw that in all the options the classification was high but after comparison, we chose k=5 because it give us the best accuracy.
+
+Let's split our data to train and test, relevant for the 3 following algorithms:
+
+```{r warning=FALSE}
+set.seed(12345)
+#Now, we dont need anymore these four column. Let's delete them.
+newCervicalCancerData <- newCervicalCancerData[ -c(33:36) ]
+split = sample.split(newCervicalCancerData$CervicalCancer, SplitRatio = 0.75)
+training_set = subset(newCervicalCancerData, split == TRUE)
+test_set = subset(newCervicalCancerData, split == FALSE)
+# Feature Scaling
+training_set[-33] = scale(training_set[-33])
+test_set[-33] = scale(test_set[-33])
+```
+
+## Decision Tree Algorithm
+
+A decision tree is a decision support tool that uses a tree-like model of decisions and their possible consequences, including chance event outcomes, resource costs, and utility. It is one way to display an algorithm that only contains conditional control statements.
+
+In order to build decision trees, we are actually building questions that help us catalog the information. The decision trees are built so that they start from the tree root and separate the data with the help of the feature that gives us the most information gain. We repeat the process in each split until pure leaves are obtained, meaning that all the samples in them are from the same class.
+
+```{r warning=FALSE}
+library("rpart.plot")
+set.seed(1234341)
+classifierDecisionTree = rpart(formula = CervicalCancer  ~ .,
+                   data = training_set)
+y_predDecisionTree = predict(classifierDecisionTree, newdata = test_set[-33], type = 'class')
+confusionMatrix(test_set[, 33], y_predDecisionTree)
+
+regressionTree3Complex <- rpart(CervicalCancer ~ . , data = training_set, method = "anova", cp = 0.01)
+rpart.plot(regressionTree3Complex)
+```
+
+## Random Forest Algorithm
+
+Random forests or random decision forests are an ensemble learning method for classification, regression and other tasks that operates by constructing a multitude of decision trees at training time. For classification tasks, the output of the random forest is the class selected by most trees.
+
+```{r warning=FALSE}
+set.seed(12389)
+classifierRandomForest = randomForest(x = training_set[-33],
+                          y = training_set$CervicalCancer,
+                          ntree = 500)
+y_predRandomForest = predict(classifierRandomForest, newdata = test_set[-33], type = 'class')
+confusionMatrix(test_set[, 33], y_predRandomForest)
+```
+
+## SVM Algorithm
+
+SVM is a machine learning algorithm that can be used to analyze data for classification or regression problems. He uses a technique called the kernel trick. SVM’s algorithm only works on numeric variables, so our data is definitely excellent data for using this type of algorithm.
+
+```{r warning=FALSE}
+set.seed(123812)
+classifierSVM = svm(formula = CervicalCancer ~ .,
+                 data = training_set,
+                 type = 'C-classification',
+                 kernel = 'linear')
+y_predSVM = predict(classifierSVM, newdata = test_set[-33])
+confusionMatrix(test_set[, 33], y_predSVM)
+```
+
+
+## Adaboost Algorithm
+
+Boosting is an ensemble technique that attempts to create a strong classifier from a number of weak classifiers.
+
+```{r warning=FALSE, message=FALSE}
+# Create index to split based on labels
+indxTrain2 <- createDataPartition(newCervicalCancerData$CervicalCancer, p=0.75, list=FALSE)
+# Subset training set with index
+training2 <- newCervicalCancerData[indxTrain2,]
+# Subset training set with index
+testing2 <- newCervicalCancerData[-indxTrain2,]
+model = boosting(CervicalCancer ~ ., data=training2, boos=TRUE, mfinal=50)
+print(names(model))
+#print(model$trees[1])
+pred = predict(model, testing2)
+print(pred$confusion)
+print(1 - pred$error)
+result = data.frame(testing2$CervicalCancer, pred$prob, pred$class)
+#print(result)
+```
+
+
+## LDA Algorithm
+
+Linear Discriminant Analysis (LDA) is a statistical method that can be used both for dimensionality reduction (Similar to PCA, tSNE and UMAP) and for classification (like linear regression, for example).
+
+LDA works on continuous variables, and is considered a supervised method.
+
+```{r warning=FALSE, message=FALSE}
+set.seed(123)
+ind <- sample(2, nrow(newCervicalCancerData),
+              replace = TRUE,
+              prob = c(0.7, 0.3))
+training <- newCervicalCancerData[ind==1,]
+testing <- newCervicalCancerData[ind==2,]
+linear <- lda(CervicalCancer~., training)
+#linear
+attributes(linear)
+p1 <- predict(linear, training)$class
+tab <- table(Predicted = p1, Actual = training$CervicalCancer)
+tab
+p2 <- predict(linear, testing)$class
+tab1 <- table(Predicted = p2, Actual = testing$CervicalCancer)
+tab1
+sum(diag(tab1))/sum(tab1)
+```
+
+## Dimensionality reduction - PCA/tSNE/LDA
+
+```{r}
+newCervicalCancerData$CervicalCancer = factor(newCervicalCancerData$CervicalCancer, levels = c(0, 1))
+## Split the data into two objects.
+IR_data <- newCervicalCancerData[ ,1:32] # We are sub-setting IR object such as to include 'all rows' and columns 1 to 4.
+IR_species <- newCervicalCancerData[ ,33] # We are sub-setting IR object such as to include 'all rows' and column 5.
+
+## Run the t-SNE algorithm and store the results into an object called tsne_results
+tsne_results <- Rtsne(IR_data, perplexity=30, check_duplicates = FALSE) # You can change the value of perplexity and see how the plot changes
+
+## Generate the t_SNE plot
+par(mfrow=c(1,2)) # To plot two images side-by-side
+plot(tsne_results$Y, col = "blue", pch = 19, cex = 1.5) # Plotting the first image
+plot(tsne_results$Y, col = "black", bg= IR_species, pch = 21, cex = 1.5) # Second plot: Color the 
+```
+
+From the graph it can be seen that there is no significant relationship between the features and the classification of cervical cancer. Although, even when we performed EDA we saw that it is difficult to see a direct and significant correlation and the results accordingly.
+However, since we did various manipulations in preparing the data and because there are still several features that together constitute risk factors for cervical cancer, we were able to predict relatively well the chance of getting more then one positive results in tests for cervical cancer, which increases the chance of being diagnosed with cervical cancer.
+
+## Conclusion and Comparison:
+
+We wanted to examine the performance of the models whose purpose was classification. The most optimal model for our data classification can be seen is the KNN algorithm with over 90% accuracy.
+
+KNN takes the features that are most similar and arranges according to them and it can be seen that our features are very significant in the context of Cervical cancer and have a good correlation so the algorithm was able to classify in the best way. KNN is a private case of estimating the density of kernel variables, and these variables can be used to achieve better results by selecting a better kernel each time.
+
+```{r}
+data <- as.matrix(data.frame(Accuracy = c(0.9579,0.8744,0.8744,0.8744,0.8598,0.8598131)))
+                          
+rownames(data) <- c("KNN", "DecisionTree", "RandomForest", "SVM", "LDA", "Adaboost")
+data
+
+barplot(data,
+        col = c("red", "blue", "green", "yellow", "pink", "orange", "brown"),
+        beside = TRUE)
+title("The Difference Between The Accuracy Of The Algorithms")
+legend("topright",
+       legend = c("KNN", "RandomForest", "DecisionTree", "SVM", "LDA", "Adaboost"),
+       fill = c("red", "blue", "green", "yellow", "pink", "orange"), cex=0.6,
+       box.lty=0)
+```
+
+## SUPPLEMENTAL 
+
+Quick Look at the data before and after changes:
+```{r}
+# Lets take a quick look on the data:
+# Before changes
+str(cervicalCancerData)
+# After changes
+str(newCervicalCancerData[1:33])
+```
+
+#### More EDA:
+```{r}
+# Mean of positive test- stds
+cervicalCancerDataSTDs <- cervicalCancerDataTmp %>%
+  filter(between(STDs, 1, 1))
+
+gSTDs <-ggplot(data = cervicalCancerDataSTDs) +
+  geom_bar(mapping = aes(x = CervicalCancer, fill = CervicalCancer))
+print((gSTDs + ggtitle("Distribution of cervical cancer tests among women with Stds")))
+
+# Mean of positive test- smoke
+cervicalCancerDataSmokes <- cervicalCancerDataTmp %>%
+  filter(between(Smokes, 1, 1))
+
+gSmokes <-ggplot(data = cervicalCancerDataSmokes) +
+  geom_bar(mapping = aes(x = CervicalCancer, fill = CervicalCancer))
+print((gSmokes + ggtitle("Distribution of cervical cancer tests among smokers")))
+
+```
+
